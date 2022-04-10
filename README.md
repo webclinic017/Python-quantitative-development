@@ -1,3 +1,176 @@
+Python-quantitative-development
+Target: Asyncio Websocket Receiver
+API documentation of Bybit exchange: https://bybit-exchange.github.io/docs/en-us/inverse/#t-websocket
+
+Using Python - the Asyncio asynchronous library, write out
+
+The Websocket Receiver containing the orderbook channel and trade channel obtains raw data from the exchange. The orderbook needs to be assembled and broadcast the data using zmq.publish() (Zero MQ).
+Python - Asyncio asynchronous program, zmq.receive() receives and prints data
+Project Standard Structure
+ProjectName
+    |-----docs
+    | |----- README.md
+    |----- scripts #Place running scripts (start, stop, backup, clean data, etc. scripts)
+    | |----- run.sh
+    |----- config.json #Startup script
+    |----- src #Source code
+    | |----- main.py #entry file
+    | |----- strategy
+    | |----- strategy1.py
+    | |----- strategy2.py
+    | |----- ...
+    |----- .gitignore
+    |----- README.md
+Terminal operation method
+(base) ubuntu@ip-172-31-40-137:~/.vscode-server$ cd ~/.vscode-server/first_project
+(base) ubuntu@ip-172-31-40-137:~/.vscode-server/first_project$ python src/main.py # server side
+(base) ubuntu@ip-172-31-40-137:~/.vscode-server/first_project$ python src/client.py # client side
+Press Ctrl + C to stop
+
+
+
+Research ideas
+Connect bybit via WebSocket:
+WebSocket Protocol
+WebSocket is a bidirectional, full-duplex protocol used in client-server communication scenarios, and unlike HTTP, it starts with ws:// or wss://. It is a stateful protocol, which means that the connection between client and server will remain active until terminated by either party (client or server). After the connection is closed by either client or server, the connection will be terminated from both ends.
+
+Let's take client-server communication as an example, whenever we initiate a connection between client and server, the client-server handshake then creates a new connection that will remain active until it is blocked by one of them. terminated by either party. Once the connection is established and kept alive, the client and server will use the same connection channel to communicate until the connection is terminated.
+
+
+
+Scenarios where WebSocket cannot be used
+If we need any real-time updates or continuous data streaming over the network, we can use WebSocket. If we want to fetch old data, or just want to fetch data once for application use, we should use HTTP protocol, data that doesn't need to be fetched very often or only once can be queried by simple HTTP request, so best in this case Don't use WebSocket.
+
+src/pybit/webSocket.py defines the class for obtaining data, no need to consider asynchronous processing
+The six design principles of classes: Single Responsibility Principle; Open Closed Principle; Liskov Substitution Principle; Law of Demeter, also known as "Least Known" "Law"; Interface Segregation Principle; Dependence Inversion Principle.
+
+class WebSocket:
+
+    def __init__(self):
+
+        self.data = {}
+
+        websocket.enableTrace(True)
+        self.ws = websocket.WebSocketApp(
+            "wss://stream.bytick.com/realtime",
+            on_open=self._on_open(self.ws),
+            on_message=self._on_message,
+            on_error=self._on_error,
+            on_close=self._on_close(self.ws),
+        )
+        # Setup the thread running WebSocketApp.
+        self.wst = threading.Thread(target=lambda: self.ws.run_forever(
+            sslopt={"cert_reqs": ssl.CERT_NONE},
+        ))
+
+        # Configure as daemon; start.
+        self.wst.daemon = True
+        self.wst.start()
+
+    def orderbook(self):
+        return self.data.get('orderBook_200.100ms.BTCUSD')
+
+    @staticmethod
+    def _on_message(self, message):
+        m = json.loads(message)
+        if 'topic' in m and m.get('topic') == 'orderBook_200.100ms.BTCUSD' and m.get('type') == 'snapshot':
+            print('Hi!')
+            self.data[m.get('topic')] = m.get('data')
+
+    @staticmethod
+    def _on_error(self, error):
+        print(error)
+
+    @staticmethod
+    def _on_close(ws):
+        print("### closed ###")
+
+    @staticmethod
+    def _on_open(ws):
+        print('Submitting subscriptions...')
+        ws.send(json.dumps({
+            'op': 'subscribe',
+            'args': ['orderBook_200.100ms.BTCUSD']
+        }))
+
+
+if __name__ == '__main__':
+    session = WebSocket()
+
+    time.sleep(5)
+
+    print(session.orderbook())
+Extract data files that are not asynchronously processed (change to asynchronous on this basis)
+# Import the WebSocket object from pybit.
+from pybit import WebSocket
+
+# Define your endpoint URLs and subscriptions.
+endpoint_public = 'wss://stream.bybit.com/realtime_public'
+endpoint_private = 'wss://stream.bybit.com/realtime_private'
+subs = [
+    'orderBookL2_25.BTCUSD',
+    'instrument_info.100ms.BTCUSD',
+    'instrument_info.100ms.ETHUSD'
+]
+
+# Connect without authentication!
+ws_unauth = WebSocket(endpoint_public, subscriptions=subs)
+
+# Connect with authentication!
+ws_auth = WebSocket(
+    endpoint_private,
+    subscriptions=['position'],
+    api_key='...',
+    api_secret='...'
+)
+
+# Let's fetch the orderbook for BTCUSD.
+print(
+    ws_unauth.fetch('orderBookL2_25.BTCUSD')
+)
+
+# We can also create a dict containing multiple results.
+print(
+    {i: ws_unauth.fetch(i) for i in subs}
+)
+
+# Check on your position. Note that no position data is received until a
+# change in your position occurs (initially, there will be no data).
+print(
+    ws_auth.fetch('position')
+)
+Asynchronous concurrent processing
+asyncio
+Run Python coroutines concurrently with full control over their execution; perform network IO and IPC; control child processes; implement distributed tasks via queues; synchronize concurrent code.
+
+import asyncio
+
+async def func():
+    print(1)
+    await asyncio.sleep(2)
+    print(2)
+    return "return value"
+
+async def main():
+    print("main start")
+    # Create a coroutine, encapsulate the coroutine into a Task object and add it to the task list of the event loop, waiting for the event loop to execute (the default is the ready state).
+    # calling
+    task_list = [
+        asyncio.create_task(func(), name="n1"),
+        asyncio.create_task(func(), name="n2")
+    ]
+    print("main end")
+    # When the execution of a coroutine encounters an IO operation, it will automatically switch to perform other tasks.
+    # The await here is to wait for all coroutines to complete execution, and save the return values ​​of all coroutines to done
+    # If the timeout value is set, it means the maximum number of seconds to wait here. The completed coroutine return value is written to done, and if it is not completed, it is written to pending.
+    done, pending = await asyncio.wait(task_list, timeout=None)
+    print(done, pending)
+
+asyncio.run(main())
+In particular, during the crawling process, the anti-crawling settings in the web page can be dealt with by sleeping for several seconds.
+
+async def func()
+
 # Python-quantitative-development
 ## 目标：Asyncio Websocket Receiver
 Bybit 交易所的 API文档：https://bybit-exchange.github.io/docs/zh-cn/inverse/#t-websocket
